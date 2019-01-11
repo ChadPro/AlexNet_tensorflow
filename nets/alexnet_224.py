@@ -21,7 +21,7 @@ ACTIVATION = tf.nn.relu
 
 def conv2d_block(inputs, dw_size, strides, downsample=False, is_training=True, padding="SAME", scope=""):
     _stride = strides
-    with tf.variable_scope(scope):
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         conv_deep = dw_size[-1]
         conv_weights = tf.get_variable("weights", dw_size, initializer=tf.truncated_normal_initializer(stddev=STDDEV))
         conv_biases = tf.get_variable("bias", conv_deep, initializer=tf.constant_initializer(0.))
@@ -35,20 +35,23 @@ def maxpool_block(inputs, pool_size, strides, downsample=True, is_training=True,
         pool = tf.nn.max_pool(inputs, ksize=pool_size, strides=_stride, padding=padding)
     return pool
 
-def fc_block(inputs, outputs, regularizer, flatten=False, is_dropout=False, is_training=True, scope=""):
+def fc_block(inputs, outputs, regularizer, activation=None, flatten=False, is_dropout=False, is_training=True, scope=""):
     if flatten:
         net_shape = inputs.get_shape()
         nodes = tf.math.multiply(tf.math.multiply(net_shape[1], net_shape[2]), net_shape[3])
         reshaped = tf.reshape(inputs, [net_shape[0], nodes])
         inputs = reshaped
-    with tf.variable_scope(scope):
+    with tf.variable_scope(scope, reuse=tf.AUTO_REUSE):
         fc_weights = tf.get_variable("weights", [inputs.get_shape()[1], outputs], initializer=tf.truncated_normal_initializer(stddev=STDDEV))
         if regularizer != None:
             tf.add_to_collection("losses", regularizer(fc_weights))
         fc_biases = tf.get_variable("bias", [outputs], initializer=tf.truncated_normal_initializer(stddev=STDDEV))
-        fc = ACTIVATION(tf.nn.bias_add(tf.matmul(inputs, fc_weights), fc_biases))
+        fc = tf.nn.bias_add(tf.matmul(inputs, fc_weights), fc_biases)
+        if activation:
+            fc = activation(fc)
         if is_dropout:
-            fc = tf.nn.dropout(fc, 0.5)
+            fc = tf.cond(is_training, lambda: tf.nn.dropout(fc, 0.5), lambda: fc)
+            # fc = tf.nn.dropout(fc, 0.5)
     return fc
 
 def alexnet_net(inputs, \
@@ -57,6 +60,7 @@ def alexnet_net(inputs, \
                 reuse=None, \
                 white_bal=False, \
                 regularizer=None, \
+                is_dropout=False, \
                 scope='alexnet_net_224_original'):
 
     
@@ -80,9 +84,9 @@ def alexnet_net(inputs, \
         net = conv2d_block(net, [3,3,384,256], [1,1,1,1], is_training=is_training, scope="conv_5")
         net = maxpool_block(net, [1,3,3,1], [1,2,2,1], is_training=is_training, scope="pool_3")
 
-        net = fc_block(net, 4096, regularizer, flatten=True, is_dropout=False, is_training=is_training, scope="fc1")
-        net = fc_block(net, 4096, regularizer, is_dropout=False, is_training=is_training, scope="fc2")
-        net = fc_block(net, num_classes, regularizer, is_dropout=False, is_training=is_training, scope="output")
+        net = fc_block(net, 4096, regularizer, activation=ACTIVATION, flatten=True, is_dropout=is_dropout, is_training=is_training, scope="fc1")
+        net = fc_block(net, 4096, regularizer, activation=ACTIVATION, is_dropout=is_dropout, is_training=is_training, scope="fc2")
+        net = fc_block(net, num_classes, regularizer, is_training=is_training, scope="output")
 
     return net
 
