@@ -23,8 +23,6 @@ with tf.Graph().as_default():
         tf.import_graph_def(output_graph_def, name="")
 
     with tf.Session() as sess:
-        #init = tf.global_variables_initializer()
-        #sess.run(init)
         input_x = sess.graph.get_tensor_by_name("inputdata:0")
         output = sess.graph.get_tensor_by_name("outputdata:0")
 
