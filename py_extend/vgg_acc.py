@@ -28,7 +28,7 @@ def acc_top5(net_output, label_input):
 
 
     batch_acc_mean = np.mean(acc_mark)
-    return str(batch_acc_mean * 100.) + "%"
+    return str(batch_acc_mean * 100.)
 
 def acc_top1(net_output, label_input):
     
@@ -38,4 +38,4 @@ def acc_top1(net_output, label_input):
     result_batch = np.equal(batch_label, batch_output)
     result_mean = np.mean(result_batch)
 
-    return str(result_mean * 100.) + "%"
+    return str(result_mean * 100.)
