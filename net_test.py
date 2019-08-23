@@ -1,10 +1,10 @@
  # -- coding: utf-8 --
 # Copyright 2019 The LongYan. All Rights Reserved.
 import tensorflow as tf
-from nets import alexnet_32
+from nets import alexnet_224
 
-img = tf.ones([1,32,32,3])
-net = alexnet_32.alexnet_net(img, num_classes=10, is_training=False)
+img = tf.ones([1,224,224,3])
+net = alexnet_224.alexnet_net(img, num_classes=10, is_training=False)
 
 init_op = tf.initialize_all_variables()
 

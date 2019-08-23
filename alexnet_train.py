@@ -4,17 +4,12 @@ from __future__ import absolute_import
 from __future__ import division
 
 import os
-import pickle
 import numpy as np
-import math
-from PIL import Image
 import tensorflow as tf
-import sys
 import time
 from nets import nets_factory
 from datasets import dataset_factory
 from py_extend import vgg_acc
-from keras.preprocessing.image import ImageDataGenerator
 
 #训练参数
 REGULARIZATION_RATE= 0.0001    
@@ -23,32 +18,44 @@ MOVING_AVERAGE_DECAY = 0.99
 ####################
 #   Learn param    #
 ####################
+tf.app.flags.DEFINE_string('train_data_path','', 'Dataset for train.')
+tf.app.flags.DEFINE_string('val_data_path', '', 'Dataset for val.')
+tf.app.flags.DEFINE_integer('num_classes', 17, 'Number of classes to use in the dataset.')
+tf.app.flags.DEFINE_integer('batch_size', 32, 'Default batch_size 64.')
+tf.app.flags.DEFINE_integer('data_nums', 0, 'All train data nums.')
+tf.app.flags.DEFINE_integer('epoch', 100, 'Train epoches.')
+tf.app.flags.DEFINE_bool('mul_gpu', False, 'Right chose use more gpu.')
+tf.app.flags.DEFINE_string('gpu_id', '', 'TF Device list.')
+
 tf.app.flags.DEFINE_float('learning_rate_base', 0.01, 'Initial learning rate.')
 tf.app.flags.DEFINE_float('learning_rate_decay', 0.99, 'Decay learning rate.')
 tf.app.flags.DEFINE_integer('learning_decay_step', 500, 'Learning rate decay step.')
-tf.app.flags.DEFINE_integer('data_nums', 0, 'All train data nums.')
-tf.app.flags.DEFINE_integer('epoch', 200, 'Train epoches.')
-tf.app.flags.DEFINE_float('gpu_fraction', 0.7, 'How to use gpu.')
+tf.app.flags.DEFINE_float('gpu_fraction', 0.9, 'How to use gpu.')
 tf.app.flags.DEFINE_string('train_model_dir', './model/model.ckpt', 'Directory where checkpoints are written to.')
 tf.app.flags.DEFINE_string('log_dir', './log_dir', 'Log file saved.')
 
-tf.app.flags.DEFINE_string('train_data_path','', 'Dataset for train.')
-tf.app.flags.DEFINE_string('val_data_path', '', 'Dataset for val.')
-
-tf.app.flags.DEFINE_string('dataset', 'flowers17_224', 'Chose dataset in dataset_factory.')
+tf.app.flags.DEFINE_string('dataset', 'flowers17_dataset', 'Chose dataset in dataset_factory.')
 tf.app.flags.DEFINE_bool('white_bal',False, 'If white balance.')
 tf.app.flags.DEFINE_bool('regularizer', False, 'If use regularizer.')
-tf.app.flags.DEFINE_bool('dropout', True, 'If use dropout.')
+tf.app.flags.DEFINE_bool('dropout', False, 'If use dropout.')
 tf.app.flags.DEFINE_integer('image_size', 224, 'Default image size.')
-tf.app.flags.DEFINE_integer('batch_size', 64, 'Default batch_size 64.')
-tf.app.flags.DEFINE_integer('num_classes', 17, 'Number of classes to use in the dataset.')
 
 tf.app.flags.DEFINE_string('net_chose','alexnet_224', 'Use to chose net.')
 tf.app.flags.DEFINE_bool('fine_tune', False, 'Is fine_tune work.')
 tf.app.flags.DEFINE_string('restore_model_dir', '', 'Restore model.')
 FLAGS = tf.app.flags.FLAGS
+
+# 每一个epoch需要的step等于数据总量除一个step上的batch_size
 step_per_epoch = int(FLAGS.data_nums / FLAGS.batch_size)
 total_steps = step_per_epoch * FLAGS.epoch
+
+# 记录最高分数
+f = open("model/scores.txt", "w")
+f.write("30.0\n")
+f.close()
+
+if len(FLAGS.gpu_id):
+    os.environ["CUDA_VISIBLE_DEVICES"] = FLAGS.gpu_id
 
 ########################################
 #           Train function             #
@@ -56,115 +63,115 @@ total_steps = step_per_epoch * FLAGS.epoch
 def train():
     #1. 获取网络 及 输入
     with tf.name_scope("Data_Input"):
-        alexnet_224 = nets_factory.get_network(FLAGS.net_chose)
         x = tf.placeholder(tf.float32, [FLAGS.batch_size, FLAGS.image_size, FLAGS.image_size, 3], name='x-input')
-        x_val = tf.placeholder(tf.float32, [FLAGS.batch_size, FLAGS.image_size, FLAGS.image_size, 3], name='x-input-val')
-        rgb_img_input = tf.reverse(x, axis=[-1])  
-        tf.summary.image("input", rgb_img_input, 5)
         y_ = tf.placeholder(tf.float32, [FLAGS.batch_size, FLAGS.num_classes], name='y-input')
-        y_val = tf.placeholder(tf.float32, [FLAGS.batch_size, FLAGS.num_classes], name='y-input-val')
-        isTrainNow = tf.placeholder(tf.bool, name='isTrainNow')
-    
-    #2. 前向传播
-    with tf.name_scope("Forward_Propagation"):
+        x_val = tf.placeholder(tf.float32, [1, FLAGS.image_size, FLAGS.image_size, 3], name='x-input-val')
+        y_val = tf.placeholder(tf.float32, [1, FLAGS.num_classes], name='y-input-val')
+        
+    #2. 前向传播 + 计算目标函数
+    with tf.name_scope("Forward_Propagation_calc_loss"):
+        alexnet = nets_factory.get_network(FLAGS.net_chose)
         if FLAGS.regularizer:
-            print("#######################   Use Regularizer   #######################")
+            print("###################### 优化方法 Regularizer#########################")
+            print("===>> 使用优化方法 Regularizer")
             regularizer = tf.contrib.layers.l2_regularizer(REGULARIZATION_RATE, scope="regularizer")  
         else:
             regularizer = None
-        y = alexnet_224.alexnet_net(x, num_classes=FLAGS.num_classes, is_training=isTrainNow, regularizer=regularizer, is_dropout=FLAGS.dropout)
-        val_y = alexnet_224.alexnet_net(x_val, num_classes=FLAGS.num_classes, is_training=isTrainNow, reuse=True, regularizer=regularizer, is_dropout=False)
-        global_step = tf.Variable(0, trainable=False)
 
-    #3. 计算损失函数
-    with tf.name_scope("Calc_Loss"):
-        cross_entropy = tf.nn.softmax_cross_entropy_with_logits(labels=y_,logits=y)
-        cross_entropy_mean = tf.reduce_mean(cross_entropy)   
+        loss_list = []
+        if not FLAGS.mul_gpu:
+            y = alexnet.alexnet_net(x, num_classes=FLAGS.num_classes, regularizer=regularizer, is_dropout=FLAGS.dropout)
+            cross_entropy = tf.nn.softmax_cross_entropy_with_logits(labels=y_, logits=y)
+            loss_list.append(cross_entropy)
+        else:
+            pass
+            gpu_num = len(FLAGS.gpu_id.strip().split(','))
+            gpu_id = range(gpu_num)
+            x_split = tf.split(x, gpu_num)
+            y_split_ = tf.split(y_, gpu_num)
+        
+            for i, d in enumerate(gpu_id):
+                with tf.device("/gpu:%s"%d):
+                    with tf.name_scope("%s_%s"%("tower", d)):
+                        y = alexnet.alexnet_net(x_split[i], num_classes=FLAGS.num_classes, regularizer=regularizer, is_dropout=FLAGS.dropout)
+                        cross_entropy = tf.nn.softmax_cross_entropy_with_logits(labels=y_split_[i], logits=y)
+                        loss_list.append(cross_entropy)
+        
+        val_y = alexnet.alexnet_net(x_val, num_classes=FLAGS.num_classes, is_training=False, regularizer=regularizer)
+        cross_entropy_mean = tf.reduce_mean(loss_list) 
         if FLAGS.regularizer:
-            loss = cross_entropy_mean + tf.add_n(tf.get_collection('losses'))
+            loss = cross_entropy_mean + tf.reduce_mean(tf.add_n(tf.get_collection('regularizer_losses')))
         else:
             loss = cross_entropy_mean
 
-    #4. 反向梯度
+    #3. 反向梯度
     with tf.name_scope("Back_Train"):
+        global_step = tf.Variable(0, trainable=False)
         learning_rate = tf.train.exponential_decay(FLAGS.learning_rate_base ,global_step, FLAGS.learning_decay_step, FLAGS.learning_rate_decay)  
-        # train_step 梯度下降(学习率，损失函数，全局步数) + BN Layer Params update op
         update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         with tf.control_dependencies(update_ops):
             train_step = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss, global_step=global_step) 
 
-    #5. 计算ACC
-    with tf.name_scope("Calc_Acc"):
-        correct_prediction = tf.equal(tf.argmax(y, 1), tf.argmax(y_, 1))
-        accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
-        correct_prediction_val = tf.equal(tf.argmax(val_y, 1), tf.argmax(y_val, 1))
-        accuracy_val = tf.reduce_mean(tf.cast(correct_prediction_val, tf.float32))
+    #4. 记录
+    with tf.name_scope("Summary_Saver"):
+        tf.summary.image("input", x, 5)
+        tf.summary.scalar('loss', loss)
+        tf.summary.scalar('learning_rate', learning_rate)
+        merged = tf.summary.merge_all()
+        writer = tf.summary.FileWriter(FLAGS.log_dir, tf.get_default_graph())
+        saver = tf.train.Saver()  
 
-    #6. 记录
-    tf.summary.scalar('loss', loss)
-    tf.summary.scalar('learning_rate', learning_rate)
-    tf.summary.scalar('acc', accuracy)
-    tf.summary.scalar('val_acc', accuracy_val)
-    merged = tf.summary.merge_all()
-    writer = tf.summary.FileWriter(FLAGS.log_dir, tf.get_default_graph())
-    saver = tf.train.Saver()  
+    #5. 获取数据
+    with tf.name_scope("Get_Data"):
+        alexnet_dataset = dataset_factory.get_dataset(FLAGS.dataset)
+        train_iterator, input_X, input_Y, _, __ = alexnet_dataset.inputs(FLAGS.train_data_path, FLAGS.batch_size, is_training=True)
+        val_iterator, input_X_val, input_Y_val, _, __ = alexnet_dataset.inputs(FLAGS.val_data_path, 1, is_training=False)
 
-    #7. 获取数据
-    alexnet_dataset = dataset_factory.get_dataset(FLAGS.dataset)
-    input_X, input_Y, testtest = alexnet_dataset.inputs(FLAGS.train_data_path,FLAGS.val_data_path,'Train', FLAGS.batch_size, None)
-    input_X_val, input_Y_val, _ = alexnet_dataset.inputs(FLAGS.train_data_path,FLAGS.val_data_path,'Val', FLAGS.batch_size, None)
-    datagen = ImageDataGenerator(
-                            featurewise_center=False,
-                            samplewise_center=False,
-                            rotation_range=180,
-							width_shift_range=0.1,
-							height_shift_range=0.1,
-							zoom_range=0.1)
-
-    #8. 开启会话    
+    #6. 开启会话    
     config = tf.ConfigProto(allow_soft_placement=True)
     config.gpu_options.per_process_gpu_memory_fraction = FLAGS.gpu_fraction
     with tf.Session(config=config) as sess:
         # init global variables  
-        init_op = tf.global_variables_initializer()
-        sess.run(init_op) 
-  
-        coord = tf.train.Coordinator()
-        threads = tf.train.start_queue_runners(sess=sess,coord=coord)
-
-        if len(FLAGS.restore_model_dir) > 0:
+        sess.run(tf.global_variables_initializer()) 
+        sess.run(train_iterator.initializer)
+        sess.run(val_iterator.initializer)
+        if (len(FLAGS.restore_model_dir) > 0) & FLAGS.fine_tune:
             print("#####=============> Restore Model : "+str(FLAGS.restore_model_dir))
             saver.restore(sess, FLAGS.restore_model_dir)
         else:
             print("#####=============> Create Model : "+str(FLAGS.train_model_dir))
 
         startTime = time.time()
-        print("##### epoch = %d" %FLAGS.epoch)
-        print("##### total_steps = %d" %total_steps)
+        print("##### Total epoches = %d" %FLAGS.epoch)
+        print("##### Total steps = %d" %total_steps)
         for i in range(total_steps):
-            X_input, Y_input, testy = sess.run([input_X, input_Y, testtest])
-            gen_input = datagen.flow(X_input, batch_size=FLAGS.batch_size)
-            input_imgs = next(gen_input)
-            _, loss_value, step = sess.run([train_step, loss, global_step], feed_dict={x:input_imgs, y_:Y_input, isTrainNow:True})   
+            X_input, Y_input = sess.run([input_X, input_Y])
+            summary_str, _, loss_value, step = sess.run([merged, train_step, loss, global_step], feed_dict={x:X_input, y_:Y_input})   
+            writer.add_summary(summary_str, i)
 
-            if i%step_per_epoch == 0:     
+            if i % step_per_epoch == 0:
                 learn_rate_now = FLAGS.learning_rate_base * ( FLAGS.learning_rate_decay**(step/ FLAGS.learning_decay_step))
-                X_input_val, Y_input_val = sess.run([input_X_val, input_Y_val])
-                
-                summary_str, outy, outy_, outy_val, outy__val = sess.run([merged, y, y_, val_y, y_val], feed_dict={x_val:X_input_val, y_val:Y_input_val, x:X_input, y_:Y_input, isTrainNow:False})
-                writer.add_summary(summary_str, i)
-                acc_top1 = vgg_acc.acc_top1(outy, outy_)
-                acc_top5 = vgg_acc.acc_top5(outy, outy_)
-                acc_val_top1 = vgg_acc.acc_top1(outy_val, outy__val)
-                acc_val_top5 = vgg_acc.acc_top5(outy_val, outy__val)
+
+                l_outy_val = []
+                l_outy__val = []
+                for j in range(100):
+                    X_input_val, Y_input_val = sess.run([input_X_val, input_Y_val])
+                    outy_val, outy__val = sess.run([val_y, y_val], feed_dict={x_val:X_input_val, y_val:Y_input_val})
+                    l_outy_val.append(outy_val)
+                    l_outy__val.append(outy__val)
+                l_outy_val = np.array(l_outy_val)
+                l_outy__val = np.array(l_outy__val)
+                l_outy_val = np.squeeze(l_outy_val, axis=1)
+                l_outy__val = np.squeeze(l_outy__val, axis=1)
+
+                acc_val_top1 = vgg_acc.acc_top1(l_outy_val, l_outy__val)
+                acc_val_top5 = vgg_acc.acc_top5(l_outy_val, l_outy__val)
                 run_time = time.time() - startTime
                 run_time = run_time / 60
 
-                print("############ epoch : %d ################"%int(i/step_per_epoch))
+                print("############ epoch : %d ################"%int(i / step_per_epoch))
                 print("   learning_rate = %g                    "%learn_rate_now)
                 print("   lose(batch)   = %g                    "%loss_value)
-                print("   acc_top1      = " + acc_top1 + "%")
-                print("   acc_top5      = " + acc_top5 + "%")
                 print("   acc_val_top1      = " + acc_val_top1 + "%")
                 print("   acc_val_top5      = " + acc_val_top5 + "%")
                 print("   train run     = %d min"%run_time)
@@ -185,10 +192,9 @@ def train():
 
         writer.close()
         durationTime = time.time() - startTime
-        minuteTime = durationTime/60
-        print("To train the MobileNet, we use %d minutes" %minuteTime)
-        coord.request_stop()
-        coord.join(threads)
+        minuteTime = durationTime / 60
+        print("To train the AlexNet, we use %d minutes" %minuteTime)
+
 
 def main(argv=None):
     train()

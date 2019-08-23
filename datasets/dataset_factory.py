@@ -3,20 +3,14 @@
 from __future__ import absolute_import
 from __future__ import division
 
-from datasets import imagenet_224
-from datasets import imagenet_300
-from datasets import flowers17_224
-from datasets import cifar10_32
-from datasets import cifar10_224
-from datasets import cifar100_224
+from datasets import flowers17_dataset
+from datasets import cifar10
+from datasets import cifar100
 
 datasets_map = {
-    'imagenet_224' : imagenet_224,
-    'imagenet_300' : imagenet_300,
-    'flowers17_224' : flowers17_224,
-    'cifar10_32' : cifar10_32,
-    'cifar10_224' : cifar10_224,
-    'cifar100_224' : cifar100_224
+    'flowers17_dataset' : flowers17_dataset,
+    'cifar10' : cifar10,
+    'cifar100' : cifar100
 }
 
 def get_dataset(name):

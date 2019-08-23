@@ -89,8 +89,8 @@ def alexnet_net(inputs, \
         net = maxpool_block(net, [1,3,3,1], [1,2,2,1], is_training=is_training, scope="pool_3") 
 
         net = fc_block(net, 4096, regularizer, activation=ACTIVATION, flatten=True, is_dropout=is_dropout, is_training=is_training, scope="fc1")
-        net = fc_block(net, 4096, regularizer, activation=ACTIVATION, is_dropout=is_dropout, is_training=is_training, scope="fc2")
-        net = fc_block(net, num_classes, regularizer, is_training=is_training, scope="output")
+        # net = fc_block(net, 4096, regularizer, activation=ACTIVATION, is_dropout=is_dropout, is_training=is_training, scope="fc2")
+        # net = fc_block(net, num_classes, regularizer, is_training=is_training, scope="output")
 
     return net
 
